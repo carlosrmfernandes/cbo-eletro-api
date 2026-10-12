@@ -33,16 +33,15 @@ ${FILTRO}
 GROUP BY pc.APROVACAO, ${CANAL};
 `;
 
-// Card FC82: filtros "Período de Emissão" (mês atual) + "Faturados" + "Entregas Pendentes"
-// + Cód. SRO = FC82 da tela de pedidos. Entrega pendente = pedido ainda sem data de entrega.
-// Sem o período, entram pedidos antigos que o F8 do pessoal não atualiza mais.
+// Card FC82: filtros "Faturados" + "Entregas Pendentes" + Cód. SRO = FC82 da tela de pedidos.
+// Entrega pendente = POSICAO_ENTREGA diferente de 1 (entregue). DTENTREGUE não serve:
+// há pedidos marcados como entregues que ficaram sem a data preenchida.
 const FC82_SQL = `
 SELECT ${CANAL} AS CANAL, COUNT(*) AS PEDIDOS
 FROM dbo.PEDIDO_MATERIAIS_CLIENTE AS pc
 WHERE pc.POSICAO = 'EMITIDO'
   AND pc.CODSRO = 'FC82'
-  AND pc.DTENTREGUE IS NULL
-  AND pc.NF_EMISSAO >= DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+  AND pc.POSICAO_ENTREGA <> 1
 GROUP BY ${CANAL};
 `;
 
@@ -139,6 +138,7 @@ const COLUNAS = [
   { campo: 'PEDIDO', titulo: 'Pedido' },
   { campo: 'DATA', titulo: 'Data', tipo: 'data' },
   { campo: 'MARKETPLACE', titulo: 'Marketplace' },
+  { campo: 'COD_RASTREAMENTO', titulo: 'Rastreio' },
   { campo: 'SEUPEDIDO', titulo: 'Pedido marketplace' },
   { campo: 'CLIENTE', titulo: 'Cliente' },
   { campo: 'CPF_CNPJ', titulo: 'CPF/CNPJ' },
@@ -149,7 +149,6 @@ const COLUNAS = [
   { campo: 'ENDERECO', titulo: 'Endereço' },
   { campo: 'BAIRRO', titulo: 'Bairro' },
   { campo: 'CEP', titulo: 'CEP' },
-  { campo: 'COD_RASTREAMENTO', titulo: 'Rastreio' },
   { campo: 'CODSRO', titulo: 'Cód. SRO' },
   { campo: 'PLP', titulo: 'PLP' },
   { campo: 'NF', titulo: 'NF' },
