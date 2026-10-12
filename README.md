@@ -29,6 +29,7 @@ Para alterar o banco, crie o próximo arquivo numerado; nunca edite um que já f
 | POST   | /api/auth/login          | -    | `{ email, password }` → token + user       |
 | GET    | /api/auth/me             | JWT  | Usuário logado                             |
 | GET    | /api/dashboard/resumo    | JWT  | Totais de NFs únicas por status            |
+| GET    | /api/dashboard/rastreio/:codigo | JWT | Histórico do objeto na API dos Correios (credenciais lidas de `ECOM_CORREIOSSETUP`) |
 
 ## Adicionando funcionalidades
 

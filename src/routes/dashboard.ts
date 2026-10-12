@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getPool, sql } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { CorreiosError, rastrear } from '../correios.js';
 
 export const dashboardRouter = Router();
 
@@ -192,6 +193,20 @@ dashboardRouter.get('/pedidos/:chave', requireAuth, async (req, res, next) => {
 
     res.json({ chave, status: status.nome, colunas: COLUNAS, linhas });
   } catch (err) {
+    next(err);
+  }
+});
+
+// Histórico do objeto direto da API dos Correios (o banco só guarda o último status em CODSRO).
+dashboardRouter.get('/rastreio/:codigo', requireAuth, async (req, res, next) => {
+  const codigo = String(req.params.codigo).trim().toUpperCase();
+  if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(codigo)) {
+    return res.status(400).json({ message: 'Código de rastreio inválido' });
+  }
+  try {
+    res.json(await rastrear(codigo));
+  } catch (err) {
+    if (err instanceof CorreiosError) return res.status(502).json({ message: err.message });
     next(err);
   }
 });
