@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { getPool, sql } from '../db.js';
+import { z } from 'zod';
+import { getPool } from '../db.js';
+import { pgPool } from '../pg.js';
 import { requireAuth } from '../middleware/auth.js';
 import { CorreiosError, rastrear } from '../correios.js';
 
@@ -140,11 +142,11 @@ const COLUNAS = [
   { campo: 'DATA', titulo: 'Data', tipo: 'data' },
   { campo: 'MARKETPLACE', titulo: 'Marketplace' },
   { campo: 'COD_RASTREAMENTO', titulo: 'Rastreio' },
+  { campo: 'OBSERVACAO', titulo: 'Observação', tipo: 'observacao' },
   { campo: 'SEUPEDIDO', titulo: 'Pedido marketplace' },
   { campo: 'CLIENTE', titulo: 'Cliente' },
   { campo: 'CPF_CNPJ', titulo: 'CPF/CNPJ' },
   { campo: 'TELEFONE', titulo: 'Telefone' },
-  { campo: 'EMAIL', titulo: 'E-mail' },
   { campo: 'CIDADE', titulo: 'Cidade' },
   { campo: 'UF', titulo: 'UF' },
   { campo: 'ENDERECO', titulo: 'Endereço' },
@@ -160,9 +162,15 @@ const COLUNAS = [
   { campo: 'COD_CLIENTE', titulo: 'Cód. cliente' },
 ];
 
-const PEDIDOS_SQL = `
+// Filtro de cada lista: os status pelo código de APROVACAO; FC82 com o mesmo critério do card.
+const FILTROS_LISTA: Record<string, { nome: string; where: string }> = {
+  ...Object.fromEntries(entries.map(([chave, s]) => [chave, { nome: s.nome, where: `pc.APROVACAO = ${s.id} AND pc.POSICAO = 'EMITIDO'` }])),
+  fc82: { nome: 'FC82', where: `pc.POSICAO = 'EMITIDO' AND pc.CODSRO = 'FC82' AND pc.POSICAO_ENTREGA <> 1` },
+};
+
+const pedidosSql = (where: string) => `
 SELECT pc.PEDIDO, pc.DATA, RTRIM(pc.VENDEDOR) AS MARKETPLACE, pc.SEUPEDIDO,
-       g.NOME AS CLIENTE, g.CPF_CNPJ, g.TEL1 AS TELEFONE, g.EMAIL, g.CIDADE, g.UF,
+       g.NOME AS CLIENTE, g.CPF_CNPJ, g.TEL1 AS TELEFONE, g.CIDADE, g.UF,
        CONCAT_WS(', ', NULLIF(RTRIM(g.ENDERECO), ''), NULLIF(g.ENDERECO_NUM, 0), NULLIF(RTRIM(g.ENDERECO_COMPL), '')) AS ENDERECO,
        g.BAIRRO, g.CEP,
        pc.COD_RASTREAMENTO, pc.CODSRO, pc.PLP, pc.NF, pc.NF_EMISSAO, pc.TOTAL_PEDIDO, pc.VLRFRETE,
@@ -170,28 +178,126 @@ SELECT pc.PEDIDO, pc.DATA, RTRIM(pc.VENDEDOR) AS MARKETPLACE, pc.SEUPEDIDO,
 FROM dbo.PEDIDO_MATERIAIS_CLIENTE AS pc
 JOIN dbo.STATUS_APROVACOES_BASE AS s ON s.STATUS_ID = pc.APROVACAO
 LEFT JOIN dbo.GESTOR_CLIENTE AS g ON g.COD_CLIENTE = pc.COD_CLIENTE
-WHERE pc.APROVACAO = @aprovacao
-  AND pc.POSICAO = 'EMITIDO'
+WHERE ${where}
 ORDER BY pc.DATA;
 `;
+
+// Colunas que o usuário escondeu na lista de pedidos (vale para todos os status).
+// Guarda as ocultas, e não as visíveis, para que uma coluna nova apareça sem ninguém precisar marcar.
+const PREF_COLUNAS = 'pedidos.colunasOcultas';
+
+async function colunasOcultas(userId: number): Promise<string[]> {
+  const { rows } = await pgPool.query<{ value: string[] }>(
+    `SELECT "value" FROM "UserPreference" WHERE "userId" = $1 AND "key" = $2`,
+    [userId, PREF_COLUNAS],
+  );
+  return rows[0]?.value ?? [];
+}
+
+// Observações vêm do Postgres (o SQL Server é só leitura) e entram na linha pelo número do pedido.
+interface Observacao {
+  texto: string;
+  por: string | null;
+  em: string;
+}
+
+async function observacoes(pedidos: string[]) {
+  const { rows } = await pgPool.query<{ pedido: string } & Observacao>(
+    `SELECT o."pedido", o."texto", u."name" AS por, o."updatedAt" AS em
+     FROM "PedidoObservacao" o
+     LEFT JOIN "User" u ON u."id" = o."updatedBy"
+     WHERE o."pedido" = ANY($1)`,
+    [pedidos],
+  );
+  return new Map(rows.map(({ pedido, ...o }) => [pedido, o]));
+}
+
+const observacaoSchema = z.object({ texto: z.string().trim().max(2000, 'Observação muito longa (máx. 2000 caracteres)') });
+
+// Texto vazio apaga a observação.
+dashboardRouter.put('/pedidos/:pedido/observacao', requireAuth, async (req, res, next) => {
+  try {
+    const pedido = String(req.params.pedido).trim();
+    if (!/^[\w-]{1,40}$/.test(pedido)) {
+      return res.status(400).json({ message: 'Pedido inválido' });
+    }
+    const parsed = observacaoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: parsed.error.issues[0].message });
+    }
+    const { texto } = parsed.data;
+
+    if (!texto) {
+      await pgPool.query(`DELETE FROM "PedidoObservacao" WHERE "pedido" = $1`, [pedido]);
+      return res.json({ observacao: null });
+    }
+
+    const { rows } = await pgPool.query<{ em: string }>(
+      `INSERT INTO "PedidoObservacao" ("pedido", "texto", "updatedBy")
+       VALUES ($1, $2, $3)
+       ON CONFLICT ("pedido") DO UPDATE SET "texto" = EXCLUDED."texto", "updatedBy" = EXCLUDED."updatedBy", "updatedAt" = NOW()
+       RETURNING "updatedAt" AS em`,
+      [pedido, texto, req.user!.id],
+    );
+    const observacao: Observacao = { texto, por: req.user!.name, em: rows[0].em };
+    res.json({ observacao });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const CAMPOS = COLUNAS.map((c) => c.campo) as [string, ...string[]];
+const colunasSchema = z.object({
+  ocultas: z
+    .array(z.enum(CAMPOS))
+    .refine((o) => new Set(o).size < CAMPOS.length, 'Deixe pelo menos uma coluna visível'),
+});
+
+dashboardRouter.put('/pedidos/colunas', requireAuth, async (req, res, next) => {
+  try {
+    const parsed = colunasSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: parsed.error.issues[0].message });
+    }
+    const ocultas = [...new Set(parsed.data.ocultas)];
+    await pgPool.query(
+      `INSERT INTO "UserPreference" ("userId", "key", "value")
+       VALUES ($1, $2, $3)
+       ON CONFLICT ("userId", "key") DO UPDATE SET "value" = EXCLUDED."value", "updatedAt" = NOW()`,
+      [req.user!.id, PREF_COLUNAS, JSON.stringify(ocultas)],
+    );
+    res.json({ ocultas });
+  } catch (err) {
+    next(err);
+  }
+});
 
 dashboardRouter.get('/pedidos/:chave', requireAuth, async (req, res, next) => {
   try {
     const chave = String(req.params.chave);
-    if (!Object.hasOwn(STATUS, chave)) {
+    if (!Object.hasOwn(FILTROS_LISTA, chave)) {
       return res.status(404).json({ message: 'Status não encontrado' });
     }
-    const status = STATUS[chave as Chave];
+    const filtro = FILTROS_LISTA[chave];
 
     const pool = await getPool();
-    const { recordset } = await pool.request().input('aprovacao', sql.Int, status.id).query(PEDIDOS_SQL);
+    const [{ recordset }, ocultas] = await Promise.all([
+      pool.request().query(pedidosSql(filtro.where)),
+      colunasOcultas(req.user!.id),
+    ]);
+
+    const obs = await observacoes(recordset.map((r) => String(r.PEDIDO).trim()));
 
     // Colunas char vêm com espaços à direita.
-    const linhas = recordset.map((r) =>
-      Object.fromEntries(COLUNAS.map(({ campo }) => [campo, typeof r[campo] === 'string' ? r[campo].trim() : r[campo]])),
-    );
+    const linhas = recordset.map((r) => {
+      const linha = Object.fromEntries(
+        COLUNAS.map(({ campo }) => [campo, typeof r[campo] === 'string' ? r[campo].trim() : r[campo]]),
+      );
+      const o = obs.get(String(r.PEDIDO).trim());
+      return { ...linha, OBSERVACAO: o?.texto ?? null, OBSERVACAO_POR: o?.por ?? null, OBSERVACAO_EM: o?.em ?? null };
+    });
 
-    res.json({ chave, status: status.nome, colunas: COLUNAS, linhas });
+    res.json({ chave, status: filtro.nome, colunas: COLUNAS, ocultas, linhas });
   } catch (err) {
     next(err);
   }

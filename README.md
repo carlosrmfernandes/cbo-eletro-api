@@ -29,6 +29,9 @@ Para alterar o banco, crie o próximo arquivo numerado; nunca edite um que já f
 | POST   | /api/auth/login          | -    | `{ email, password }` → token + user       |
 | GET    | /api/auth/me             | JWT  | Usuário logado                             |
 | GET    | /api/dashboard/resumo    | JWT  | Totais de NFs únicas por status            |
+| GET    | /api/dashboard/pedidos/:chave | JWT | Pedidos do status, colunas e as colunas que o usuário ocultou |
+| PUT    | /api/dashboard/pedidos/colunas | JWT | `{ ocultas: string[] }` → salva as colunas ocultas do usuário |
+| PUT    | /api/dashboard/pedidos/:pedido/observacao | JWT | `{ texto }` → salva a observação do pedido (compartilhada; texto vazio apaga) |
 | GET    | /api/dashboard/rastreio/:codigo | JWT | Histórico do objeto na API dos Correios (credenciais lidas de `ECOM_CORREIOSSETUP`) |
 
 ## Adicionando funcionalidades
